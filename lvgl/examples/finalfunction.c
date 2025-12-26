@@ -24,6 +24,13 @@ static lv_obj_t * img_display;
 static lv_obj_t * label_result;
 static lv_img_dsc_t img_dsc;
 static uint8_t * img_buf_rgb; // Buffer for LVGL (RGB888)
+
+// --- NEW: Network Thread Globals ---
+static uint8_t * shared_net_buf; // Buffer shared between cam and net threads
+static uint8_t * sending_buf;    // Buffer used by net thread for sending
+static pthread_mutex_t net_lock; // Mutex for the network buffers
+static volatile bool has_new_net_frame = false;
+
 static int sock_fd = -1;
 static volatile bool running = true;
 
@@ -95,6 +102,73 @@ static int xioctl(int fh, int request, void *arg) {
     return r;
 }
 
+// --- NEW: Network Thread Loop ---
+static void *net_thread_entry(void *arg) {
+    (void)arg;
+    struct sockaddr_in serv_addr;
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_port = htons(SERVER_PORT);
+    inet_pton(AF_INET, SERVER_IP, &serv_addr.sin_addr);
+
+    while (running) {
+        // 1. Manage Connection
+        if (sock_fd < 0) {
+            sock_fd = socket(AF_INET, SOCK_STREAM, 0);
+            if (connect(sock_fd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+                close(sock_fd);
+                sock_fd = -1;
+                usleep(1000000); // Retry every 1s
+                continue;
+            } else {
+                LV_LOG_USER("Connected to ML Server");
+            }
+        }
+
+        // 2. Check for new frame (Thread Safe Copy)
+        bool work_to_do = false;
+        pthread_mutex_lock(&net_lock);
+        if (has_new_net_frame) {
+            memcpy(sending_buf, shared_net_buf, IMG_W * IMG_H * 3);
+            has_new_net_frame = false;
+            work_to_do = true;
+        }
+        pthread_mutex_unlock(&net_lock);
+
+        if (!work_to_do) {
+            usleep(5000); // Sleep 5ms if no new frame to save CPU
+            continue;
+        }
+
+        // 3. Send and Recv (Blocking, but only blocks this thread)
+        uint32_t size = IMG_W * IMG_H * 3;
+        uint32_t net_size = htonl(size);
+
+        if (send(sock_fd, &net_size, 4, 0) < 0 ||
+            send(sock_fd, sending_buf, size, 0) < 0) {
+            LV_LOG_ERROR("Send failed, closing socket");
+            close(sock_fd);
+            sock_fd = -1;
+            continue;
+        }
+
+        char result[64] = {0};
+        if (recv(sock_fd, result, 64, 0) <= 0) {
+            LV_LOG_ERROR("Recv failed, closing socket");
+            close(sock_fd);
+            sock_fd = -1;
+            continue;
+        }
+
+        // 4. Update UI Result
+        pthread_mutex_lock(&lock);
+        strncpy(shared_result, result, 63);
+        pthread_mutex_unlock(&lock);
+    }
+
+    if (sock_fd >= 0) close(sock_fd);
+    return NULL;
+}
+
 // --- THREAD LOOP ---
 static void *cam_thread_entry(void *arg) {
     (void)arg;
@@ -143,34 +217,9 @@ static void *cam_thread_entry(void *arg) {
     enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     xioctl(fd_cam, VIDIOC_STREAMON, &type);
 
-    // 3. Connect to Python Server
-    sock_fd = socket(AF_INET, SOCK_STREAM, 0);
-    struct sockaddr_in serv_addr;
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(SERVER_PORT);
-    inet_pton(AF_INET, SERVER_IP, &serv_addr.sin_addr);
-
-    if (connect(sock_fd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-        LV_LOG_ERROR("Connection Failed");
-        close(sock_fd);
-        sock_fd = -1;
-    } else {
-        LV_LOG_USER("Connected to ML Server");
-    }
-
     // 4. Loop
     int frame_cnt = 0;
     while (running) {
-        if (sock_fd < 0 && (frame_cnt++ % 60 == 0)) {
-             sock_fd = socket(AF_INET, SOCK_STREAM, 0);
-             if (connect(sock_fd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-                 close(sock_fd);
-                 sock_fd = -1;
-             } else {
-                 LV_LOG_USER("Re-connected to ML Server");
-             }
-        }
-
         fd_set fds;
         FD_ZERO(&fds);
         FD_SET(fd_cam, &fds);
@@ -183,37 +232,23 @@ static void *cam_thread_entry(void *arg) {
         buf.memory = V4L2_MEMORY_MMAP;
         if (xioctl(fd_cam, VIDIOC_DQBUF, &buf) == -1) continue;
 
-        // Convert YUYV -> RGB
+        // Convert YUYV -> RGB (Display Buffer)
         yuyv_to_rgb((uint8_t*)buffers[buf.index].start, img_buf_rgb, IMG_W, IMG_H);
 
-        // Send to Server
-        if (sock_fd >= 0) {
-            uint32_t size = IMG_W * IMG_H * 3; // RGB size
-            uint32_t net_size = htonl(size);
-            send(sock_fd, &net_size, 4, 0);
-            send(sock_fd, img_buf_rgb, size, 0);
+        // Hand off to Network Thread (Non-blocking copy)
+        pthread_mutex_lock(&net_lock);
+        memcpy(shared_net_buf, img_buf_rgb, IMG_W * IMG_H * 3);
+        has_new_net_frame = true;
+        pthread_mutex_unlock(&net_lock);
 
-            // Receive Result
-            char result[64] = {0};
-            recv(sock_fd, result, 64, 0);
-
-            // Update Shared State
-            pthread_mutex_lock(&lock);
-            strncpy(shared_result, result, 63);
-            frame_ready = true;
-            pthread_mutex_unlock(&lock);
-        } else {
-            // Even if no network, we have a new camera frame
-            pthread_mutex_lock(&lock);
-            frame_ready = true;
-            pthread_mutex_unlock(&lock);
-        }
+        // Signal UI that a frame is ready for display
+        pthread_mutex_lock(&lock);
+        frame_ready = true;
+        pthread_mutex_unlock(&lock);
 
         xioctl(fd_cam, VIDIOC_QBUF, &buf);
-        // usleep(30000); // ~30fps
     }
 
-    close(sock_fd);
     close(fd_cam);
     return NULL;
 }
@@ -237,12 +272,15 @@ static void update_timer_cb(lv_timer_t * t) {
 void final_project_init(void) {
     // Init Mutex
     pthread_mutex_init(&lock, NULL);
+    pthread_mutex_init(&net_lock, NULL); // Init new mutex
 
     // 1. Create Image Object
     img_display = lv_img_create(lv_screen_active());
 
-    // Allocate buffer: W * H * 3 bytes (RGB888)
+    // Allocate buffers
     img_buf_rgb = malloc(IMG_W * IMG_H * 3);
+    shared_net_buf = malloc(IMG_W * IMG_H * 3); // Allocate shared
+    sending_buf = malloc(IMG_W * IMG_H * 3);    // Allocate sending
     memset(img_buf_rgb, 0, IMG_W * IMG_H * 3);
 
     // Init Image Descriptor
@@ -271,4 +309,9 @@ void final_project_init(void) {
     pthread_t thread_id;
     pthread_create(&thread_id, NULL, cam_thread_entry, NULL);
     pthread_detach(thread_id);
+
+    // 5. Start Network Thread
+    pthread_t net_thread_id;
+    pthread_create(&net_thread_id, NULL, net_thread_entry, NULL);
+    pthread_detach(net_thread_id);
 }

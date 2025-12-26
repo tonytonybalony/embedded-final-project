@@ -23,10 +23,8 @@
 #include "lvgl/examples/lv_examples.h"
 #include "lvgl/demos/lv_demos.h"
 #include <SDL.h>
-
 #include "hal/hal.h"
 
-#include "lvgl/examples/mainfunction.c"
 
 /*********************
  *      DEFINES
@@ -75,7 +73,7 @@
 
 
     /*FINAL PROJECT FUNCTION*/
-    extern void final_project_init(void);
+    void final_project_init(void);
     final_project_init();
 
 
