@@ -15,7 +15,7 @@
 // --- CONFIGURATION ---
 #define SERVER_IP   "192.168.175.1"  // Host IP (VMware NAT usually ends in .1)
 #define SERVER_PORT 9999
-#define VIDEO_DEV   "/dev/video0"
+#define VIDEO_DEV   "/dev/video2"
 #define IMG_W       320
 #define IMG_H       240
 
