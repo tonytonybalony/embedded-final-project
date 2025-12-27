@@ -237,14 +237,30 @@ static void update_timer_cb(lv_timer_t * t) {
     if (do_invalidate) lv_obj_invalidate(img_display);
 }
 
+static void btn_event_cb(lv_event_t * e) {
+    lv_obj_t * btn = lv_event_get_target(e);
+    lv_obj_t * label = lv_obj_get_child(btn, 0);
+    const char * txt = lv_label_get_text(label);
+    LV_LOG_USER("Button clicked: %s", txt);
+}
+
 // --- INIT ---
 void final_project_init(void) {
     pthread_mutex_init(&lock, NULL);
     pthread_mutex_init(&net_lock, NULL);
 
-    img_display = lv_img_create(lv_screen_active());
+    // 1. Setup Screen Styling
+    lv_obj_t * scr = lv_screen_active();
+    lv_obj_set_style_bg_color(scr, lv_color_hex(0x202020), 0); // Dark Grey Background
 
-    // Allocate all buffers
+    // 2. Header Label
+    lv_obj_t * header = lv_label_create(scr);
+    lv_label_set_text(header, "Smart Surveillance System");
+    lv_obj_set_style_text_font(header, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(header, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_align(header, LV_ALIGN_TOP_MID, 0, 10);
+
+    // 3. Video Display Container
     img_buf_rgb = malloc(IMG_W * IMG_H * 3);
     capture_buf = malloc(IMG_W * IMG_H * 3);
     shared_net_buf = malloc(IMG_W * IMG_H * 3);
@@ -259,14 +275,46 @@ void final_project_init(void) {
     img_dsc.header.cf = LV_COLOR_FORMAT_RGB888;
     img_dsc.data = img_buf_rgb;
 
-    lv_img_set_src(img_display, &img_dsc);
-    lv_obj_align(img_display, LV_ALIGN_TOP_MID, 0, 20);
+    lv_obj_t * video_cont = lv_obj_create(scr);
+    lv_obj_set_size(video_cont, IMG_W + 10, IMG_H + 10);
+    lv_obj_align(video_cont, LV_ALIGN_TOP_MID, 0, 40);
+    lv_obj_set_style_bg_color(video_cont, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_border_width(video_cont, 2, 0);
+    lv_obj_set_style_border_color(video_cont, lv_color_hex(0x404040), 0);
+    lv_obj_clear_flag(video_cont, LV_OBJ_FLAG_SCROLLABLE);
 
-    label_result = lv_label_create(lv_screen_active());
+    img_display = lv_img_create(video_cont);
+    lv_img_set_src(img_display, &img_dsc);
+    lv_obj_center(img_display);
+
+    // 4. Result Label (Only)
+    label_result = lv_label_create(scr);
     lv_label_set_text(label_result, "Waiting for ML...");
-    lv_obj_align_to(label_result, img_display, LV_ALIGN_BOTTOM_LEFT, 0, 20);
+    lv_obj_align_to(label_result, video_cont, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 10);
     lv_obj_set_style_text_font(label_result, &lv_font_montserrat_20, 0);
-    lv_obj_set_style_text_color(label_result, lv_color_hex(0xFF0000), 0);
+    lv_obj_set_style_text_color(label_result, lv_color_hex(0x00FF00), 0);
+
+    // 5. Buttons (5 Buttons)
+    const char * btns[] = {"CONNECT", "DISCONNECT", "SNAPSHOT", "MODE", "SETTINGS"};
+    lv_obj_t * btn_cont = lv_obj_create(scr);
+    lv_obj_set_size(btn_cont, IMG_W + 10, 60);
+    lv_obj_align_to(btn_cont, label_result, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 20);
+    lv_obj_set_style_bg_opa(btn_cont, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(btn_cont, 0, 0);
+    lv_obj_set_flex_flow(btn_cont, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(btn_cont, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(btn_cont, LV_OBJ_FLAG_SCROLLABLE);
+
+    for(int i=0; i<5; i++) {
+        lv_obj_t * btn = lv_btn_create(btn_cont);
+        lv_obj_set_size(btn, (IMG_W / 5) - 10, 40);
+        lv_obj_add_event_cb(btn, btn_event_cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x007ACC), 0);
+
+        lv_obj_t * lbl = lv_label_create(btn);
+        lv_label_set_text(lbl, btns[i]);
+        lv_obj_center(lbl);
+    }
 
     lv_timer_create(update_timer_cb, 30, NULL);
 
