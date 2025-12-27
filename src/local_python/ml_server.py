@@ -7,8 +7,8 @@ from ultralytics import YOLO
 # Configuration
 HOST = '0.0.0.0'
 PORT = 9999
-IMG_W = 432
-IMG_H = 240
+IMG_W = 852
+IMG_H = 480
 
 def start_server():
     # 1. Load YOLO Model
@@ -43,7 +43,7 @@ def start_server():
 
             # 4. Run YOLO Inference
             # verbose=False keeps the terminal clean
-            results = model(frame_np, conf=0.2, iou=0.25, verbose=False)
+            results = model(frame_np, conf=0.5, iou=0.25, verbose=False)
 
             # 5. Draw Bounding Boxes
             # plot() returns the image as a BGR numpy array

@@ -61,7 +61,7 @@
     lv_init();
 
     /*Initialize the HAL (display, input devices, tick) for LVGL*/
-    sdl_hal_init(450, 600);
+    sdl_hal_init(1000,1000);
 
     /*MIDTERM PROJECT FUNCTION*/
     //radial_gradient_background();

@@ -16,8 +16,9 @@
 #define SERVER_IP   "192.168.175.1"
 #define SERVER_PORT 9999
 #define VIDEO_DEV   "/dev/video0"  // <--- Make sure this is your loopback device
-#define IMG_W       432
-#define IMG_H       240
+// loaded video size
+#define IMG_W       852
+#define IMG_H       480
 
 // --- GLOBALS ---
 static lv_obj_t * img_display;
@@ -259,11 +260,11 @@ void final_project_init(void) {
     img_dsc.data = img_buf_rgb;
 
     lv_img_set_src(img_display, &img_dsc);
-    lv_obj_center(img_display);
+    lv_obj_align(img_display, LV_ALIGN_TOP_MID, 0, 20);
 
     label_result = lv_label_create(lv_screen_active());
     lv_label_set_text(label_result, "Waiting for ML...");
-    lv_obj_align(label_result, LV_ALIGN_BOTTOM_MID, 0, -20);
+    lv_obj_align_to(label_result, img_display, LV_ALIGN_BOTTOM_LEFT, 0, 20);
     lv_obj_set_style_text_font(label_result, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(label_result, lv_color_hex(0xFF0000), 0);
 
