@@ -288,6 +288,24 @@ void final_project_init(void) {
     lv_obj_center(img_display);
 
     // 4. Result Label (Only)
+
+    // Label under image, aligned left
+    lv_obj_t * res_title = lv_label_create(scr);
+    lv_label_set_text(res_title, "AI Detection Result:");
+    lv_obj_set_style_text_color(res_title, lv_color_hex(0xAAAAAA), 0);
+    lv_obj_align_to(res_title, video_cont, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 40);
+
+    // Text output bar under the label, same length as video
+    lv_obj_t * res_cont = lv_obj_create(scr);
+    lv_obj_set_size(res_cont, IMG_W + 10, 50);
+    // Align to LABEL
+    lv_obj_align_to(res_cont, res_title, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 5);
+    lv_obj_set_style_bg_color(res_cont, lv_color_hex(0x303030), 0);
+    lv_obj_set_style_border_color(res_cont, lv_color_hex(0x505050), 0);
+    lv_obj_clear_flag(res_cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_all(res_cont, 5, 0);
+
+
     label_result = lv_label_create(scr);
     lv_label_set_text(label_result, "Waiting for ML...");
     lv_obj_align_to(label_result, video_cont, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 10);
@@ -298,7 +316,7 @@ void final_project_init(void) {
     const char * btns[] = {"CONNECT", "DISCONNECT", "SNAPSHOT", "MODE", "SETTINGS"};
     lv_obj_t * btn_cont = lv_obj_create(scr);
     lv_obj_set_size(btn_cont, IMG_W + 10, 60);
-    lv_obj_align_to(btn_cont, label_result, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 20);
+    lv_obj_align_to(btn_cont, res_cont, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 20);
     lv_obj_set_style_bg_opa(btn_cont, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(btn_cont, 0, 0);
     lv_obj_set_flex_flow(btn_cont, LV_FLEX_FLOW_ROW);
@@ -307,12 +325,29 @@ void final_project_init(void) {
 
     for(int i=0; i<5; i++) {
         lv_obj_t * btn = lv_btn_create(btn_cont);
-        lv_obj_set_size(btn, (IMG_W / 5) - 10, 40);
+        lv_obj_set_size(btn, (IMG_W / 5) - 10, 45);
         lv_obj_add_event_cb(btn, btn_event_cb, LV_EVENT_CLICKED, NULL);
-        lv_obj_set_style_bg_color(btn, lv_color_hex(0x007ACC), 0);
+
+        // Modern Button Styling
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x2196F3), 0); // Material Blue
+        lv_obj_set_style_bg_grad_color(btn, lv_color_hex(0x1976D2), 0);
+        lv_obj_set_style_bg_grad_dir(btn, LV_GRAD_DIR_VER, 0);
+        lv_obj_set_style_radius(btn, 8, 0);
+        lv_obj_set_style_shadow_width(btn, 15, 0);
+        lv_obj_set_style_shadow_color(btn, lv_color_hex(0x000000), 0);
+        lv_obj_set_style_shadow_opa(btn, LV_OPA_30, 0);
+        lv_obj_set_style_shadow_ofs_y(btn, 4, 0);
+        lv_obj_set_style_border_width(btn, 0, 0);
+
+        // Pressed State
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x1976D2), LV_STATE_PRESSED);
+        lv_obj_set_style_bg_grad_color(btn, lv_color_hex(0x0D47A1), LV_STATE_PRESSED);
+        lv_obj_set_style_shadow_ofs_y(btn, 2, LV_STATE_PRESSED);
+        lv_obj_set_style_translate_y(btn, 2, LV_STATE_PRESSED); // Move down when pressed
 
         lv_obj_t * lbl = lv_label_create(btn);
         lv_label_set_text(lbl, btns[i]);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
         lv_obj_center(lbl);
     }
 
