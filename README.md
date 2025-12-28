@@ -4,9 +4,9 @@
 ## What's next?
 
 
-- Pass buttons events
+- ///Pass buttons events
 
-- Local receive buttons events
+- ///Local receive buttons events
 
 - Local snapshot logic ignore the received video while snapshot
 
