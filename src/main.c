@@ -76,12 +76,6 @@
     void final_project_init(void);
     final_project_init();
 
-
-
-
-
-
-
     while(1) {
       /* Periodically call the lv_task handler.
        * It could be done in a timer interrupt or an OS task too.*/

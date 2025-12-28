@@ -727,7 +727,7 @@ void final_project_init(void) {
         lv_obj_set_style_bg_color(ui_btns[i], lv_color_hex(0x1A1A1A), 0); // Dark Grey
         lv_obj_set_style_bg_grad_color(ui_btns[i], lv_color_hex(0x000000), 0); // Black
         lv_obj_set_style_bg_grad_dir(ui_btns[i], LV_GRAD_DIR_VER, 0);
-        lv_obj_set_style_radius(ui_btns[i], 8, 0);
+        lv_obj_set_style_radius(ui_btns[i], 0, 0);
         lv_obj_set_style_shadow_width(ui_btns[i], 15, 0);
         lv_obj_set_style_shadow_color(ui_btns[i], lv_color_hex(0x000000), 0);
         lv_obj_set_style_shadow_opa(ui_btns[i], LV_OPA_30, 0);
