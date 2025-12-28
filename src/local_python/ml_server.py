@@ -12,6 +12,8 @@ from PIL import Image
 from gtts import gTTS
 
 # Configuration
+# This process is the TCP server for the LVGL client.
+# It receives (button state + frame) and returns (frame + fixed-size text + optional MP3 audio).
 HOST = '0.0.0.0'
 PORT = 9999
 IMG_W = 852
@@ -60,6 +62,10 @@ def _print_gemini_config_status() -> None:
 
 
 def _recv_exact(conn: socket.socket, size: int) -> bytes | None:
+    """Receive exactly `size` bytes or return None if the client disconnects.
+
+    TCP is a stream: a single recv() may return fewer bytes than requested.
+    """
     data = b""
     while len(data) < size:
         try:
@@ -119,6 +125,16 @@ def start_server():
     last_explain_state = 0
     cached_explanation = "Waiting for Explanation..."
 
+    # Protocol (client -> server):
+    #   - 4 bytes button state (4x uint8)
+    #   - IMG_W*IMG_H*3 bytes frame (BGR)
+    # Protocol (server -> client):
+    #   - IMG_W*IMG_H*3 bytes annotated/original frame
+    #   - 64 bytes YOLO string (UTF-8, NUL padded)
+    #   - 512 bytes Explain string (UTF-8, NUL padded)
+    #   - 4 bytes audio length (uint32)
+    #   - N bytes audio payload (MP3)
+
     try:
         while True:
             # 2. Receive Button Status (4 Bytes)
@@ -152,6 +168,8 @@ def start_server():
             audio_bytes = b""
 
             # AI Explain Logic (Button 2)
+            # Edge-triggered: only request Gemini on the rising edge (0 -> 1)
+            # then keep returning the cached text while the button stays pressed.
             if is_explain == 1:
                 if last_explain_state == 0:
                     # Trigger new explanation
@@ -166,17 +184,18 @@ def start_server():
                             image_bytes = buf.getvalue()
 
                             response = client.models.generate_content(
-                                model="gemini-2.5-flash-lite",
+                                model="gemma-3-27b-it",
                                 contents=[
                                     types.Part.from_bytes(
                                         data=image_bytes,
                                         mime_type="image/jpeg",
                                     ),
                                     "You are a navigation assistant for a visually impaired user. "
-                                    "Describe only what you can see in this photo. In 1 to 2 short sentences, "
+                                    "Describe only what you can see in this photo. In 2 to 3 sentences, "
                                     "state: (1) the main scene ahead, "
                                     "(2) any immediate hazards (obstacles, drop-offs/stairs, vehicles/bikes), "
-                                    "and (3) whether it appears safe to continue straight. If you are not sure, say 'uncertain' and do not guess.(not necessary)",
+                                    "and (3) whether it appears safe to continue straight. If you are not sure, say 'uncertain' and do not guess.(not necessary) "
+                                    "Do not talk about anything unrelated to the given context and do not say things like 'Here is the Description of the scene'",
                                 ],
                             )
 
@@ -184,7 +203,7 @@ def start_server():
                             cached_explanation = (response_text or "").strip() or "(No text returned)"
                             print(f"Gemini: {cached_explanation}")
 
-                            # Generate Audio
+                            # Generate Audio (MP3 bytes) using gTTS
                             if cached_explanation and "Error" not in cached_explanation:
                                 try:
                                     print("Generating audio...")
@@ -226,22 +245,35 @@ def start_server():
 
             print(f"YOLO: {yolo_str} | Explain: {explain_str[:20]}... | Buttons: {btn_states}")
 
-            # 6. Send Processed Image BACK to C
-            # Ensure the array is contiguous and bytes
-            conn.sendall(annotated_frame.tobytes())
+            # 6-8. Send results back to C (guard against client disconnects)
+            try:
+                # 6. Image (fixed size)
+                conn.sendall(annotated_frame.tobytes())
 
-            # 7. Send Text Results
-            # Send YOLO (64 bytes)
-            conn.sendall(yolo_str[:64].ljust(64, '\0').encode('utf-8'))
-            # Send Explain (512 bytes)
-            conn.sendall(explain_str[:512].ljust(512, '\0').encode('utf-8'))
+                # 7. Send Text Results
+                # Helper to pad bytes.
+                # Critical: client reads fixed 64/512 byte fields.
+                # If we don't enforce sizes, the client will desync and interpret
+                # leftover text bytes as the audio length.
+                def pad_bytes(text, length):
+                    b = text.encode('utf-8')
+                    if len(b) > length:
+                        return b[:length]
+                    return b + b'\0' * (length - len(b))
 
-            # 8. Send Audio Data
-            # Send size (4 bytes)
-            conn.sendall(struct.pack('I', len(audio_bytes)))
-            # Send data
-            if len(audio_bytes) > 0:
-                conn.sendall(audio_bytes)
+                # Send YOLO (64 bytes)
+                conn.sendall(pad_bytes(yolo_str, 64))
+                # Send Explain (512 bytes)
+                conn.sendall(pad_bytes(explain_str, 512))
+
+
+                # 8. Audio (length-prefixed)
+                conn.sendall(struct.pack('I', len(audio_bytes)))
+                if audio_bytes:
+                    conn.sendall(audio_bytes)
+            except Exception as e:
+                print(f"Client disconnected while sending: {e}")
+                break
 
     except KeyboardInterrupt:
         print("Shutting down (Ctrl+C).")

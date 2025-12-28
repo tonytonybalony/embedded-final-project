@@ -15,36 +15,43 @@
 #include <time.h>
 
 // --- CONFIGURATION ---
+// Client connects to the Python ML server which runs YOLO + Gemini + gTTS.
 #define SERVER_IP   "192.168.175.1"
 #define SERVER_PORT 9999
-#define VIDEO_DEV   "/dev/video0"  // <--- Make sure this is your loopback device
-// loaded video size
+#define VIDEO_DEV   "/dev/video0"  // Virtual webcam (v4l2loopback)
 #define IMG_W       852
 #define IMG_H       480
 #define ALARM_FILE "/home/tonytony/lv_port_pc_vscode/src/assets/audio/alarm.wav"
 #define AI_VOICE_FILE "/home/tonytony/lv_port_pc_vscode/src/assets/audio/ai_response.mp3"
 
 // --- GLOBALS ---
+// UI objects (LVGL)
 static lv_obj_t * img_display;
 static lv_obj_t * label_result;
-static lv_obj_t * label_explain; // New label for AI Explain
+static lv_obj_t * label_explain; // Label for AI Explain
 static lv_img_dsc_t img_dsc;
 
-// Button Globals
+// Button state shared between UI thread and networking thread.
+// btn_states meaning (index -> feature):
+//   0: YOLO ON/OFF
+//   1: AI Explain (Gemini) ON/OFF
+//   2: Snapshot ON/OFF
+//   3: Emergency ON/OFF
 static lv_obj_t * ui_btns[5];
 static bool btn_states[5] = {false, false, false, false, false};
 static lv_timer_t * emergency_timer = NULL;
 static bool emergency_flash_state = false;
 
-// Buffers
-static uint8_t * img_buf_rgb;    // DISPLAY buffer (Read by LVGL)
-static uint8_t * capture_buf;    // CAMERA buffer (Written by Camera)
-static uint8_t * shared_net_buf; // NETWORK buffer (Read by Network)
-static uint8_t * sending_buf;    // SENDING/RECV buffer (Used by Socket)
+// Buffers (all are IMG_W * IMG_H * 3 bytes)
+// Note: naming is based on ownership / producer-consumer responsibilities.
+static uint8_t * img_buf_rgb;    // DISPLAY buffer: owned by LVGL image descriptor; written by net thread
+static uint8_t * capture_buf;    // CAMERA buffer: written by camera thread (BGR converted from YUYV)
+static uint8_t * shared_net_buf; // CAMERA->NET mailbox: last captured frame for network thread
+static uint8_t * sending_buf;    // NET scratch buffer: send + receive image payload
 
 // Synchronization
-static pthread_mutex_t lock;     // Protects UI and Display buffers
-static pthread_mutex_t net_lock; // Protects Network buffer
+static pthread_mutex_t lock;     // Protects UI-visible state (img_buf_rgb + shared text)
+static pthread_mutex_t net_lock; // Protects camera->net mailbox (shared_net_buf + has_new_net_frame)
 static volatile bool has_new_net_frame = false;
 static volatile bool frame_ready = false;
 
@@ -62,6 +69,8 @@ static int fd_cam = -1;
 
 
 // --- HELPERS ---
+// Convert a YUYV422 frame (from V4L2) into BGR888.
+// LVGL and OpenCV both typically expect BGR ordering in this project.
 static void yuyv_to_rgb(const uint8_t *src, uint8_t *dst, int width, int height) {
     int i, j;
     for (i = 0; i < height; i++) {
@@ -71,9 +80,14 @@ static void yuyv_to_rgb(const uint8_t *src, uint8_t *dst, int width, int height)
             int y1 = src[(i * width + j) * 2 + 2];
             int v  = src[(i * width + j) * 2 + 3] - 128;
 
-            int r = y0 + (1.370705 * v);
-            int g = y0 - (0.698001 * v) - (0.337633 * u);
-            int b = y0 + (1.732446 * u);
+            // Pre-calculate common terms
+            int c_v = (int)(1.370705 * v);
+            int c_u = (int)(1.732446 * u);
+            int c_uv = (int)(0.698001 * v + 0.337633 * u);
+
+            int r = y0 + c_v;
+            int g = y0 - c_uv;
+            int b = y0 + c_u;
 
             if (r < 0) r = 0; if (r > 255) r = 255;
             if (g < 0) g = 0; if (g > 255) g = 255;
@@ -82,9 +96,9 @@ static void yuyv_to_rgb(const uint8_t *src, uint8_t *dst, int width, int height)
             int idx = (i * width + j) * 3;
             dst[idx] = b; dst[idx + 1] = g; dst[idx + 2] = r;
 
-            r = y1 + (1.370705 * v);
-            g = y1 - (0.698001 * v) - (0.337633 * u);
-            b = y1 + (1.732446 * u);
+            r = y1 + c_v;
+            g = y1 - c_uv;
+            b = y1 + c_u;
 
             if (r < 0) r = 0; if (r > 255) r = 255;
             if (g < 0) g = 0; if (g > 255) g = 255;
@@ -102,8 +116,10 @@ static int xioctl(int fh, int request, void *arg) {
     return r;
 }
 
+// Save the current displayed frame to ./snapshots as a BMP.
+// Input buffer is BGR888 (same as received from Python / OpenCV).
 static void save_snapshot_bmp(const uint8_t *buffer, int width, int height) {
-    // Create directory if not exists
+    // Create directory if it doesn't exist
     struct stat st = {0};
     if (stat("snapshots", &st) == -1) {
         mkdir("snapshots", 0700);
@@ -164,7 +180,55 @@ static void save_snapshot_bmp(const uint8_t *buffer, int width, int height) {
     printf("Snapshot saved to %s\n", filename);
 }
 
+// --- NETWORK HELPERS ---
+// TCP is a stream: send()/recv() may transfer fewer bytes than requested.
+// These helpers loop until the full payload is transferred.
+//
+// Important stability fix:
+// - recv()/send() can be interrupted by signals (errno == EINTR).
+// - Treating EINTR as a fatal error caused intermittent disconnects.
+// - We now retry on EINTR.
+static bool send_exact(int fd, const void *buf, size_t len) {
+    size_t total = 0;
+    while (total < len) {
+        ssize_t n = send(fd, (const uint8_t *)buf + total, len - total, 0);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return false;
+        }
+        total += n;
+    }
+    return true;
+}
+
+static bool recv_exact(int fd, void *buf, size_t len) {
+    size_t total = 0;
+    while (total < len) {
+        ssize_t n = recv(fd, (uint8_t *)buf + total, len - total, 0);
+        if (n < 0) {
+            if (errno == EINTR) continue; // Retry on interrupt
+            return false; // Error or closed
+        }
+        if (n == 0) {
+            return false;
+        }
+        total += n;
+    }
+    return true;
+}
+
 // --- NETWORK THREAD ---
+// Network protocol (client -> server):
+//   1) 4 bytes button state (4x uint8)
+//   2) IMG_W*IMG_H*3 bytes frame (BGR)
+// Network protocol (server -> client):
+//   1) IMG_W*IMG_H*3 bytes processed frame
+//   2) 64 bytes YOLO text (NUL padded)
+//   3) 512 bytes Explain text (NUL padded)
+//   4) 4 bytes audio size (uint32)
+//   5) N bytes audio payload (MP3)
+//
+// This thread owns socket I/O and writes results into shared buffers for the UI timer.
 static void *net_thread_entry(void *arg) {
     (void)arg;
     struct sockaddr_in serv_addr;
@@ -175,6 +239,13 @@ static void *net_thread_entry(void *arg) {
     while (running) {
         if (sock_fd < 0) {
             sock_fd = socket(AF_INET, SOCK_STREAM, 0);
+            // Set socket timeout to 20 seconds to allow time for AI processing (Gemini + TTS)
+            struct timeval timeout;
+            timeout.tv_sec = 20;
+            timeout.tv_usec = 0;
+            setsockopt(sock_fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+            setsockopt(sock_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
             if (connect(sock_fd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
                 close(sock_fd); sock_fd = -1; is_connected = false;
                 usleep(1000000); continue;
@@ -182,7 +253,7 @@ static void *net_thread_entry(void *arg) {
             is_connected = true;
         }
 
-        // 1. Get Frame from Camera Thread
+    // 1) Get latest frame from camera thread
         bool work_to_do = false;
         pthread_mutex_lock(&net_lock);
         if (has_new_net_frame) {
@@ -194,84 +265,91 @@ static void *net_thread_entry(void *arg) {
 
         if (!work_to_do) { usleep(5000); continue; }
 
-        // 2. Send Frame to Python
-        // Send Button Status (4 Bytes)
+    // 2) Send button state + frame to Python server
         uint8_t status[4];
         for(int i=0; i<4; i++) status[i] = btn_states[i] ? 1 : 0;
 
-        if (send(sock_fd, status, 4, 0) < 0) {
+        if (!send_exact(sock_fd, status, 4)) {
             close(sock_fd); sock_fd = -1; is_connected = false; continue;
         }
 
-        if (send(sock_fd, sending_buf, IMG_W * IMG_H * 3, 0) < 0) {
+        if (!send_exact(sock_fd, sending_buf, IMG_W * IMG_H * 3)) {
             close(sock_fd); sock_fd = -1; is_connected = false; continue;
         }
 
-        // 3. Receive PROCESSED Frame from Python (Reuse sending_buf)
-        int total_read = 0;
-        int size = IMG_W * IMG_H * 3;
-        while (total_read < size) {
-            int n = recv(sock_fd, sending_buf + total_read, size - total_read, 0);
-            if (n <= 0) {
-                close(sock_fd); sock_fd = -1; is_connected = false; total_read = -1; break;
-            }
-            total_read += n;
+    // 3) Receive processed frame from server (reuse sending_buf)
+        if (!recv_exact(sock_fd, sending_buf, IMG_W * IMG_H * 3)) {
+            close(sock_fd); sock_fd = -1; is_connected = false; continue;
         }
-        if (total_read < 0) continue;
 
-        // 4. Receive Text Results (YOLO + Explain)
+    // 4) Receive fixed-size text fields
         char yolo_res[64] = {0};
         char explain_res[512] = {0};
 
         // Recv YOLO (64 bytes)
-        if (recv(sock_fd, yolo_res, 64, 0) <= 0) {
+        if (!recv_exact(sock_fd, yolo_res, 64)) {
             close(sock_fd); sock_fd = -1; is_connected = false; continue;
         }
         // Recv Explain (512 bytes)
-        if (recv(sock_fd, explain_res, 512, 0) <= 0) {
+        if (!recv_exact(sock_fd, explain_res, 512)) {
             close(sock_fd); sock_fd = -1; is_connected = false; continue;
         }
 
-        // 5. Receive Audio Data
+    // 5) Receive optional audio payload (length-prefixed)
         uint32_t audio_size = 0;
-        if (recv(sock_fd, &audio_size, sizeof(audio_size), 0) <= 0) {
+        if (!recv_exact(sock_fd, &audio_size, sizeof(audio_size))) {
             close(sock_fd); sock_fd = -1; is_connected = false; continue;
         }
 
         if (audio_size > 0) {
-            // Limit max size to avoid overflow (e.g., 2MB)
-            if (audio_size > 2 * 1024 * 1024) audio_size = 2 * 1024 * 1024;
+            // Safety cap: don't allocate more than 2MB (prevents huge malloc if protocol desync)
+            uint32_t read_size = audio_size;
+            if (read_size > 2 * 1024 * 1024) read_size = 2 * 1024 * 1024;
 
-            uint8_t *audio_buf = malloc(audio_size);
+            uint8_t *audio_buf = malloc(read_size);
             if (audio_buf) {
-                int received = 0;
-                while (received < audio_size) {
-                    int r = recv(sock_fd, audio_buf + received, audio_size - received, 0);
-                    if (r <= 0) break;
-                    received += r;
-                }
-
-                // Save to file
-                FILE *fp = fopen(AI_VOICE_FILE, "wb");
-                if (fp) {
-                    fwrite(audio_buf, 1, audio_size, fp);
-                    fclose(fp);
+                // Read the allowed amount
+                if (recv_exact(sock_fd, audio_buf, read_size)) {
+                    // Save to file
+                    FILE *fp = fopen(AI_VOICE_FILE, "wb");
+                    if (fp) {
+                        fwrite(audio_buf, 1, read_size, fp);
+                        fclose(fp);
+                    } else {
+                        printf("Failed to open audio file: %s\n", AI_VOICE_FILE);
+                    }
+                } else {
+                    free(audio_buf);
+                    close(sock_fd); sock_fd = -1; is_connected = false; continue;
                 }
                 free(audio_buf);
             } else {
-                // If malloc fails, consume the data to keep sync
+                printf("Malloc failed for audio size: %d\n", read_size);
+                // Malloc failed, we still need to consume the data from socket
+                // We will do it in the discard loop below
+                read_size = 0;
+            }
+
+            // Discard any remaining bytes (if audio_size > read_size)
+            // This handles both the >2MB case and the malloc failure case
+            if (audio_size > read_size) {
                 uint8_t temp[1024];
-                int received = 0;
-                while (received < audio_size) {
-                    int chunk = (audio_size - received > 1024) ? 1024 : (audio_size - received);
-                    int r = recv(sock_fd, temp, chunk, 0);
-                    if (r <= 0) break;
-                    received += r;
+                size_t remaining = audio_size - read_size;
+                bool ok = true;
+                while (remaining > 0) {
+                    size_t chunk = (remaining > 1024) ? 1024 : remaining;
+                    if (!recv_exact(sock_fd, temp, chunk)) {
+                        ok = false; break;
+                    }
+                    remaining -= chunk;
+                }
+                if (!ok) {
+                    close(sock_fd); sock_fd = -1; is_connected = false; continue;
                 }
             }
-        }
+    }
 
-        // 6. Update UI Buffers
+    // 6) Update shared UI buffers (image + strings)
         pthread_mutex_lock(&lock);
 
         // Always update text buffers
@@ -362,19 +440,21 @@ static void *cam_thread_entry(void *arg) {
 
 // --- AUDIO HELPERS ---
 
-// UPDATED: Function to play the pre-generated MP3
+// Play the latest AI voice response.
+// Preferred path: server generates an MP3 (gTTS) and client plays it with mpg123.
+// Fallback: if MP3 isn't present, speak locally using espeak.
 static void speak_text(const char *text) {
-    // 1. Check if the MP3 file exists (Generated by Python)
+    // 1) Check if the MP3 file exists (generated by Python server)
     if (access(AI_VOICE_FILE, F_OK) == 0) {
-        // Stop any currently playing audio
+        // Stop any currently playing TTS audio
         system("pkill mpg123");
 
-        // Play MP3 (Redirect output to /dev/null to avoid "No such device" errors)
+        // Play MP3 (redirect output to /dev/null to avoid terminal noise)
         char cmd[512];
         snprintf(cmd, sizeof(cmd), "mpg123 -q %s > /dev/null 2>&1 &", AI_VOICE_FILE);
         system(cmd);
     }
-    // 2. Fallback to espeak if MP3 is missing (e.g. gTTS failed or Python server didn't update)
+    // 2) Fallback: use espeak if MP3 is missing (e.g., gTTS failed)
     else {
         if (text == NULL || strlen(text) == 0) return;
         char cmd[1024];
@@ -405,8 +485,12 @@ static void stop_alarm(void) {
 }
 
 // --- UI UPDATE TIMER ---
-static char last_spoken_text[512]; // Add a static buffer to track the last spoken text
-static bool prev_explain_state = false; // Track previous state of AI Explain button
+// LVGL periodic tick to:
+// - update labels based on latest network results
+// - trigger TTS when the explain text changes
+// - invalidate the image when a new processed frame arrives
+static char last_spoken_text[512];     // Track last spoken explain text to avoid repeating audio
+static bool prev_explain_state = false; // Track rising/falling edge of AI Explain button
 
 static void update_timer_cb(lv_timer_t * t) {
     (void)t;
