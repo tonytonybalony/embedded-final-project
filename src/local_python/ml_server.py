@@ -26,7 +26,12 @@ def start_server():
 
     try:
         while True:
-            # 2. Receive Raw Image Bytes from C
+            # 2. Receive Button Status (1 Byte)
+            status_data = conn.recv(1)
+            if not status_data: break
+            is_on = struct.unpack('B', status_data)[0]
+
+            # 3. Receive Raw Image Bytes from C
             size = IMG_W * IMG_H * 3
             frame_data = b''
             while len(frame_data) < size:
@@ -36,36 +41,38 @@ def start_server():
 
             if len(frame_data) < size: break
 
-            # 3. Convert Bytes to Numpy Array (BGR format)
+            # 4. Convert Bytes to Numpy Array (BGR format)
             # C sends BGR, and OpenCV uses BGR, so no conversion needed.
             frame_np = np.frombuffer(frame_data, dtype=np.uint8)
             frame_np = frame_np.reshape((IMG_H, IMG_W, 3))
 
-            # 4. Run YOLO Inference
-            # verbose=False keeps the terminal clean
-            results = model(frame_np, conf=0.5, iou=0.25, verbose=False)
+            # 5. Run YOLO Inference (Only if ON)
+            annotated_frame = frame_np
+            result_str = ""
 
-            # 5. Draw Bounding Boxes
-            # plot() returns the image as a BGR numpy array
-            annotated_frame = results[0].plot()
+            if is_on == 1:
+                # verbose=False keeps the terminal clean
+                results = model(frame_np, conf=0.5, iou=0.25, verbose=False)
 
-            # 6. Extract Text Result (Highest Confidence Object)
-            result_str = "No Detection"
-            if len(results[0].boxes) > 0:
-                # Get the first detection (usually highest confidence)
-                box = results[0].boxes[0]
-                cls_id = int(box.cls[0])
-                conf = float(box.conf[0])
-                name = results[0].names[cls_id]
-                result_str = f"{name}: {int(conf * 100)}%"
+                # plot() returns the image as a BGR numpy array
+                annotated_frame = results[0].plot()
 
-            print(f"Result: {result_str}")
+                # Extract Text Result (Highest Confidence Object)
+                if len(results[0].boxes) > 0:
+                    # Get the first detection (usually highest confidence)
+                    box = results[0].boxes[0]
+                    cls_id = int(box.cls[0])
+                    conf = float(box.conf[0])
+                    name = results[0].names[cls_id]
+                    result_str = f"{name}: {int(conf * 100)}%"
 
-            # 7. Send Processed Image BACK to C
+            print(f"Result: {result_str} (Status: {'ON' if is_on else 'OFF'})")
+
+            # 6. Send Processed Image BACK to C
             # Ensure the array is contiguous and bytes
             conn.sendall(annotated_frame.tobytes())
 
-            # 8. Send Text Result (Fixed 64 bytes)
+            # 7. Send Text Result (Fixed 64 bytes)
             conn.sendall(result_str.ljust(64).encode('utf-8'))
 
     except Exception as e:

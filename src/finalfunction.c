@@ -25,6 +25,12 @@ static lv_obj_t * img_display;
 static lv_obj_t * label_result;
 static lv_img_dsc_t img_dsc;
 
+// Button Globals
+static lv_obj_t * ui_btns[5];
+static bool btn_states[5] = {false, false, false, false, false};
+static lv_timer_t * emergency_timer = NULL;
+static bool emergency_flash_state = false;
+
 // Buffers
 static uint8_t * img_buf_rgb;    // DISPLAY buffer (Read by LVGL)
 static uint8_t * capture_buf;    // CAMERA buffer (Written by Camera)
@@ -118,6 +124,12 @@ static void *net_thread_entry(void *arg) {
         if (!work_to_do) { usleep(5000); continue; }
 
         // 2. Send Frame to Python
+        // Send Button Status (1 Byte)
+        uint8_t status = btn_states[0] ? 1 : 0;
+        if (send(sock_fd, &status, 1, 0) < 0) {
+            close(sock_fd); sock_fd = -1; continue;
+        }
+
         if (send(sock_fd, sending_buf, IMG_W * IMG_H * 3, 0) < 0) {
             close(sock_fd); sock_fd = -1; continue;
         }
@@ -237,11 +249,75 @@ static void update_timer_cb(lv_timer_t * t) {
     if (do_invalidate) lv_obj_invalidate(img_display);
 }
 
+static void emergency_timer_cb(lv_timer_t * t) {
+    (void)t;
+    emergency_flash_state = !emergency_flash_state;
+    if (emergency_flash_state) {
+        lv_obj_set_style_bg_color(ui_btns[3], lv_color_hex(0x8B2020), 0); // Red
+        lv_obj_set_style_bg_grad_color(ui_btns[3], lv_color_hex(0x8B2020), 0);
+    } else {
+        lv_obj_set_style_bg_color(ui_btns[3], lv_color_hex(0x000000), 0); // Black
+        lv_obj_set_style_bg_grad_color(ui_btns[3], lv_color_hex(0x000000), 0);
+    }
+}
+
 static void btn_event_cb(lv_event_t * e) {
     lv_obj_t * btn = lv_event_get_target(e);
     lv_obj_t * label = lv_obj_get_child(btn, 0);
-    const char * txt = lv_label_get_text(label);
-    LV_LOG_USER("Button clicked: %s", txt);
+
+    int btn_idx = -1;
+    for(int i=0; i<4; i++) {
+        if(ui_btns[i] == btn) {
+            btn_idx = i;
+            break;
+        }
+    }    if(btn_idx == 0) { // Button 1: ON/OFF
+        btn_states[0] = !btn_states[0];
+        lv_label_set_text(label, btn_states[0] ? "OFF" : "ON");
+        // TODO: Send command to Python to toggle YOLO
+    }
+    else if(btn_idx == 1) { // Button 2: AI Explain/Return
+        btn_states[1] = !btn_states[1];
+        lv_label_set_text(label, btn_states[1] ? "Return" : "AI Explain");
+
+        if(btn_states[1]) { // AI Explain Active -> Disable 1 & 3
+            lv_obj_add_state(ui_btns[0], LV_STATE_DISABLED);
+            lv_obj_add_state(ui_btns[2], LV_STATE_DISABLED);
+        } else { // Return -> Enable 1 & 3
+            lv_obj_clear_state(ui_btns[0], LV_STATE_DISABLED);
+            lv_obj_clear_state(ui_btns[2], LV_STATE_DISABLED);
+        }
+    }
+    else if(btn_idx == 2) { // Button 3: Snapshot/Return
+        btn_states[2] = !btn_states[2];
+        lv_label_set_text(label, btn_states[2] ? "Return" : "Snapshot");
+
+        if(btn_states[2]) { // Snapshot Active -> Disable 1 & 2
+            lv_obj_add_state(ui_btns[0], LV_STATE_DISABLED);
+            lv_obj_add_state(ui_btns[1], LV_STATE_DISABLED);
+        } else { // Return -> Enable 1 & 2
+            lv_obj_clear_state(ui_btns[0], LV_STATE_DISABLED);
+            lv_obj_clear_state(ui_btns[1], LV_STATE_DISABLED);
+        }
+    }
+    else if(btn_idx == 3) { // Button 4: Emergency
+        btn_states[3] = !btn_states[3];
+        if(btn_states[3]) {
+            // Start Flashing
+            if(emergency_timer == NULL) {
+                emergency_timer = lv_timer_create(emergency_timer_cb, 200, NULL);
+            }
+            lv_timer_resume(emergency_timer);
+        } else {
+            // Stop Flashing
+            if(emergency_timer) {
+                lv_timer_pause(emergency_timer);
+            }
+            // Reset to Dark
+            lv_obj_set_style_bg_color(ui_btns[3], lv_color_hex(0x1A1A1A), 0);
+            lv_obj_set_style_bg_grad_color(ui_btns[3], lv_color_hex(0x000000), 0);
+        }
+    }
 }
 
 // --- INIT ---
@@ -312,42 +388,44 @@ void final_project_init(void) {
     lv_obj_set_style_text_font(label_result, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(label_result, lv_color_hex(0x00FF00), 0);
 
-    // 5. Buttons (5 Buttons)
-    const char * btns[] = {"CONNECT", "DISCONNECT", "SNAPSHOT", "MODE", "SETTINGS"};
+    // 5. Buttons (4 Buttons)
+    const char * btns[] = {"ON", "AI Explain", "Snapshot", "Emergency"};
     lv_obj_t * btn_cont = lv_obj_create(scr);
     lv_obj_set_size(btn_cont, IMG_W + 10, 60);
-    lv_obj_align_to(btn_cont, res_cont, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 20);
+    lv_obj_align_to(btn_cont, label_result, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 80);
     lv_obj_set_style_bg_opa(btn_cont, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(btn_cont, 0, 0);
     lv_obj_set_flex_flow(btn_cont, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(btn_cont, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(btn_cont, LV_OBJ_FLAG_SCROLLABLE);
 
-    for(int i=0; i<5; i++) {
-        lv_obj_t * btn = lv_btn_create(btn_cont);
-        lv_obj_set_size(btn, (IMG_W / 5) - 10, 45);
-        lv_obj_add_event_cb(btn, btn_event_cb, LV_EVENT_CLICKED, NULL);
+    for(int i=0; i<4; i++) {
+        ui_btns[i] = lv_btn_create(btn_cont);
+        lv_obj_set_size(ui_btns[i], (IMG_W / 4)-20, 45);
+        lv_obj_add_event_cb(ui_btns[i], btn_event_cb, LV_EVENT_CLICKED, NULL);
 
-        // Modern Button Styling
-        lv_obj_set_style_bg_color(btn, lv_color_hex(0x2196F3), 0); // Material Blue
-        lv_obj_set_style_bg_grad_color(btn, lv_color_hex(0x1976D2), 0);
-        lv_obj_set_style_bg_grad_dir(btn, LV_GRAD_DIR_VER, 0);
-        lv_obj_set_style_radius(btn, 8, 0);
-        lv_obj_set_style_shadow_width(btn, 15, 0);
-        lv_obj_set_style_shadow_color(btn, lv_color_hex(0x000000), 0);
-        lv_obj_set_style_shadow_opa(btn, LV_OPA_30, 0);
-        lv_obj_set_style_shadow_ofs_y(btn, 4, 0);
-        lv_obj_set_style_border_width(btn, 0, 0);
+        // Modern Button Styling (Dark & Metallic Gold)
+        lv_obj_set_style_bg_color(ui_btns[i], lv_color_hex(0x1A1A1A), 0); // Dark Grey
+        lv_obj_set_style_bg_grad_color(ui_btns[i], lv_color_hex(0x000000), 0); // Black
+        lv_obj_set_style_bg_grad_dir(ui_btns[i], LV_GRAD_DIR_VER, 0);
+        lv_obj_set_style_radius(ui_btns[i], 8, 0);
+        lv_obj_set_style_shadow_width(ui_btns[i], 15, 0);
+        lv_obj_set_style_shadow_color(ui_btns[i], lv_color_hex(0x000000), 0);
+        lv_obj_set_style_shadow_opa(ui_btns[i], LV_OPA_30, 0);
+        lv_obj_set_style_shadow_ofs_y(ui_btns[i], 4, 0);
+        lv_obj_set_style_border_width(ui_btns[i], 1, 0);
+        lv_obj_set_style_border_color(ui_btns[i], lv_color_hex(0xD4AF37), 0); // Metallic Gold Border
 
         // Pressed State
-        lv_obj_set_style_bg_color(btn, lv_color_hex(0x1976D2), LV_STATE_PRESSED);
-        lv_obj_set_style_bg_grad_color(btn, lv_color_hex(0x0D47A1), LV_STATE_PRESSED);
-        lv_obj_set_style_shadow_ofs_y(btn, 2, LV_STATE_PRESSED);
-        lv_obj_set_style_translate_y(btn, 2, LV_STATE_PRESSED); // Move down when pressed
+        lv_obj_set_style_bg_color(ui_btns[i], lv_color_hex(0x000000), LV_STATE_PRESSED);
+        lv_obj_set_style_bg_grad_color(ui_btns[i], lv_color_hex(0x1A1A1A), LV_STATE_PRESSED);
+        lv_obj_set_style_shadow_ofs_y(ui_btns[i], 2, LV_STATE_PRESSED);
+        lv_obj_set_style_translate_y(ui_btns[i], 2, LV_STATE_PRESSED); // Move down when pressed
 
-        lv_obj_t * lbl = lv_label_create(btn);
+        lv_obj_t * lbl = lv_label_create(ui_btns[i]);
         lv_label_set_text(lbl, btns[i]);
         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(lbl, lv_color_hex(0xD4AF37), 0); // Metallic Gold Text
         lv_obj_center(lbl);
     }
 
