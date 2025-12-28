@@ -11,6 +11,8 @@
 #include <arpa/inet.h>
 #include <linux/videodev2.h>
 #include <pthread.h>
+#include <sys/stat.h>
+#include <time.h>
 
 // --- CONFIGURATION ---
 #define SERVER_IP   "192.168.175.1"
@@ -95,6 +97,68 @@ static int xioctl(int fh, int request, void *arg) {
     return r;
 }
 
+static void save_snapshot_bmp(const uint8_t *buffer, int width, int height) {
+    // Create directory if not exists
+    struct stat st = {0};
+    if (stat("snapshots", &st) == -1) {
+        mkdir("snapshots", 0700);
+    }
+
+    // Generate filename with timestamp
+    time_t t = time(NULL);
+    struct tm tm = *localtime(&t);
+    char filename[64];
+    snprintf(filename, sizeof(filename), "snapshots/snap_%04d%02d%02d_%02d%02d%02d.bmp",
+             tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+
+    FILE *f = fopen(filename, "wb");
+    if (!f) {
+        LV_LOG_ERROR("Failed to open file for snapshot");
+        return;
+    }
+
+    // BMP Header
+    uint32_t headers_size = 14 + 40;
+    uint32_t pixel_data_size = width * height * 3;
+    uint32_t filesize = headers_size + pixel_data_size;
+
+    uint8_t bmpfileheader[14] = {
+        'B','M',
+        filesize & 0xFF, (filesize >> 8) & 0xFF, (filesize >> 16) & 0xFF, (filesize >> 24) & 0xFF,
+        0,0, 0,0,
+        headers_size & 0xFF, (headers_size >> 8) & 0xFF, (headers_size >> 16) & 0xFF, (headers_size >> 24) & 0xFF
+    };
+
+    uint8_t bmpinfoheader[40] = {
+        40,0,0,0,
+        width & 0xFF, (width >> 8) & 0xFF, (width >> 16) & 0xFF, (width >> 24) & 0xFF,
+        height & 0xFF, (height >> 8) & 0xFF, (height >> 16) & 0xFF, (height >> 24) & 0xFF,
+        1,0,
+        24,0,
+        0,0,0,0,
+        pixel_data_size & 0xFF, (pixel_data_size >> 8) & 0xFF, (pixel_data_size >> 16) & 0xFF, (pixel_data_size >> 24) & 0xFF,
+        0,0,0,0,
+        0,0,0,0,
+        0,0,0,0,
+        0,0,0,0
+    };
+
+    fwrite(bmpfileheader, 1, 14, f);
+    fwrite(bmpinfoheader, 1, 40, f);
+
+    // BMP stores pixels bottom-to-top, so we write rows in reverse order
+    // Also, BMP expects BGR. Our buffer is BGR (from Python/OpenCV), so we can write directly.
+    // However, we need to flip vertically.
+    uint8_t *row = malloc(width * 3);
+    for (int y = height - 1; y >= 0; y--) {
+        memcpy(row, &buffer[y * width * 3], width * 3);
+        fwrite(row, 1, width * 3, f);
+    }
+    free(row);
+    fclose(f);
+    printf("Snapshot saved to %s\n", filename);
+}
+
 // --- NETWORK THREAD ---
 static void *net_thread_entry(void *arg) {
     (void)arg;
@@ -157,9 +221,12 @@ static void *net_thread_entry(void *arg) {
 
         // 5. Update UI Buffers (This is now the ONLY place updating the display)
         pthread_mutex_lock(&lock);
-        memcpy(img_buf_rgb, sending_buf, IMG_W * IMG_H * 3); // Copy processed image
-        strncpy(shared_result, result, 63);
-        frame_ready = true;
+        // Only update if Snapshot (Button 3) is NOT active
+        if (!btn_states[2]) {
+            memcpy(img_buf_rgb, sending_buf, IMG_W * IMG_H * 3); // Copy processed image
+            strncpy(shared_result, result, 63);
+            frame_ready = true;
+        }
         pthread_mutex_unlock(&lock);
     }
     if (sock_fd >= 0) close(sock_fd);
@@ -321,6 +388,12 @@ static void btn_event_cb(lv_event_t * e) {
         if(btn_states[2]) { // Snapshot Active -> Disable 1 & 2
             lv_obj_add_state(ui_btns[0], LV_STATE_DISABLED);
             lv_obj_add_state(ui_btns[1], LV_STATE_DISABLED);
+
+            // Save Snapshot immediately
+            pthread_mutex_lock(&lock);
+            save_snapshot_bmp(img_buf_rgb, IMG_W, IMG_H);
+            pthread_mutex_unlock(&lock);
+
         } else { // Return -> Enable 1 & 2
             lv_obj_clear_state(ui_btns[0], LV_STATE_DISABLED);
             lv_obj_clear_state(ui_btns[1], LV_STATE_DISABLED);

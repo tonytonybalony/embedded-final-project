@@ -8,7 +8,7 @@
 
 - ///Local receive buttons events
 
-- Local snapshot logic ignore the received video while snapshot
+- ///Local snapshot logic ignore the received video while snapshot
 
 - Local AI explain with Gemini API
 

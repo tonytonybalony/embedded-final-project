@@ -2,6 +2,8 @@ import socket
 import struct
 import cv2
 import numpy as np
+import os
+import datetime
 from ultralytics import YOLO
 
 # Configuration
@@ -33,9 +35,6 @@ def start_server():
             # Unpack 4 bytes: [ON/OFF, AI Explain, Snapshot, Emergency]
             btn_states = struct.unpack('4B', status_data)
             is_on = btn_states[0]
-
-            # Debug: Print all button states
-            # print(f"Btns: ON={btn_states[0]}, Explain={btn_states[1]}, Snap={btn_states[2]}, Emerg={btn_states[3]}")
 
             # 3. Receive Raw Image Bytes from C
             size = IMG_W * IMG_H * 3
