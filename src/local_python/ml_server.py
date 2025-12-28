@@ -26,10 +26,16 @@ def start_server():
 
     try:
         while True:
-            # 2. Receive Button Status (1 Byte)
-            status_data = conn.recv(1)
+            # 2. Receive Button Status (4 Bytes)
+            status_data = conn.recv(4)
             if not status_data: break
-            is_on = struct.unpack('B', status_data)[0]
+
+            # Unpack 4 bytes: [ON/OFF, AI Explain, Snapshot, Emergency]
+            btn_states = struct.unpack('4B', status_data)
+            is_on = btn_states[0]
+
+            # Debug: Print all button states
+            # print(f"Btns: ON={btn_states[0]}, Explain={btn_states[1]}, Snap={btn_states[2]}, Emerg={btn_states[3]}")
 
             # 3. Receive Raw Image Bytes from C
             size = IMG_W * IMG_H * 3
@@ -66,7 +72,7 @@ def start_server():
                     name = results[0].names[cls_id]
                     result_str = f"{name}: {int(conf * 100)}%"
 
-            print(f"Result: {result_str} (Status: {'ON' if is_on else 'OFF'})")
+            print(f"Result: {result_str} | Buttons: [ON:{btn_states[0]}, EXP:{btn_states[1]}, SNP:{btn_states[2]}, EMG:{btn_states[3]}]")
 
             # 6. Send Processed Image BACK to C
             # Ensure the array is contiguous and bytes

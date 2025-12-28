@@ -125,9 +125,11 @@ static void *net_thread_entry(void *arg) {
         if (!work_to_do) { usleep(5000); continue; }
 
         // 2. Send Frame to Python
-        // Send Button Status (1 Byte)
-        uint8_t status = btn_states[0] ? 1 : 0;
-        if (send(sock_fd, &status, 1, 0) < 0) {
+        // Send Button Status (4 Bytes)
+        uint8_t status[4];
+        for(int i=0; i<4; i++) status[i] = btn_states[i] ? 1 : 0;
+
+        if (send(sock_fd, status, 4, 0) < 0) {
             close(sock_fd); sock_fd = -1; continue;
         }
 
