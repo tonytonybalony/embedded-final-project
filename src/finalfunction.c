@@ -37,8 +37,8 @@ static lv_img_dsc_t img_dsc;
 //   1: AI Explain (Gemini) ON/OFF
 //   2: Snapshot ON/OFF
 //   3: Emergency ON/OFF
-static lv_obj_t * ui_btns[5];
-static bool btn_states[5] = {false, false, false, false, false};
+static lv_obj_t * ui_btns[4];
+static bool btn_states[4] = {false, false, false, false};
 static lv_timer_t * emergency_timer = NULL;
 static bool emergency_flash_state = false;
 
