@@ -404,6 +404,7 @@ static void stop_alarm(void) {
 
 // --- UI UPDATE TIMER ---
 static char last_spoken_text[512]; // Add a static buffer to track the last spoken text
+static bool prev_explain_state = false; // Track previous state of AI Explain button
 
 static void update_timer_cb(lv_timer_t * t) {
     (void)t;
@@ -416,20 +417,32 @@ static void update_timer_cb(lv_timer_t * t) {
     }
 
     // Update Explain Label & Speak
-    if (shared_explain_result[0] != '\0') {
-        lv_label_set_text(label_explain, shared_explain_result);
+    bool current_explain_state = btn_states[1];
 
-        // NEW: Check if text changed, if so, speak it
-        if (strcmp(shared_explain_result, last_spoken_text) != 0) {
-            strncpy(last_spoken_text, shared_explain_result, 511);
-            speak_text(shared_explain_result);
+    if (current_explain_state) {
+        // AI Explain is ON
+        if (shared_explain_result[0] != '\0') {
+            lv_label_set_text(label_explain, shared_explain_result);
 
+            // Check if text changed, if so, speak it
+            if (strcmp(shared_explain_result, last_spoken_text) != 0) {
+                strncpy(last_spoken_text, shared_explain_result, 511);
+                speak_text(shared_explain_result);
+            }
+        }
+    } else {
+        // AI Explain is OFF
+        // If it just turned OFF, clear everything and stop audio
+        if (prev_explain_state) {
+            lv_label_set_text(label_explain, ""); // Clear text
+            last_spoken_text[0] = '\0';           // Reset spoken text memory
+
+            // Stop Audio (mpg123 and espeak)
+            system("pkill mpg123");
+            system("pkill espeak");
         }
     }
-    // Clear last spoken if text is empty (e.g. Return button pressed)
-    else {
-        last_spoken_text[0] = '\0';
-    }
+    prev_explain_state = current_explain_state;
 
     bool do_invalidate = false;
     if (frame_ready) {
