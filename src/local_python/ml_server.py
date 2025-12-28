@@ -172,7 +172,11 @@ def start_server():
                                         data=image_bytes,
                                         mime_type="image/jpeg",
                                     ),
-                                    "Describe this image in one short sentence.",
+                                    "You are a navigation assistant for a visually impaired user. "
+                                    "Describe only what you can see in this photo. In 1 to 2 short sentences, "
+                                    "state: (1) the main scene ahead, "
+                                    "(2) any immediate hazards (obstacles, drop-offs/stairs, vehicles/bikes), "
+                                    "and (3) whether it appears safe to continue straight. If you are not sure, say 'uncertain' and do not guess.(not necessary)",
                                 ],
                             )
 

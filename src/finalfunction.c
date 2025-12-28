@@ -49,6 +49,7 @@ static volatile bool has_new_net_frame = false;
 static volatile bool frame_ready = false;
 
 static int sock_fd = -1;
+static volatile bool is_connected = false;
 static volatile bool running = true;
 static char shared_yolo_result[64];
 static char shared_explain_result[512];
@@ -175,9 +176,10 @@ static void *net_thread_entry(void *arg) {
         if (sock_fd < 0) {
             sock_fd = socket(AF_INET, SOCK_STREAM, 0);
             if (connect(sock_fd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-                close(sock_fd); sock_fd = -1;
+                close(sock_fd); sock_fd = -1; is_connected = false;
                 usleep(1000000); continue;
             }
+            is_connected = true;
         }
 
         // 1. Get Frame from Camera Thread
@@ -198,11 +200,11 @@ static void *net_thread_entry(void *arg) {
         for(int i=0; i<4; i++) status[i] = btn_states[i] ? 1 : 0;
 
         if (send(sock_fd, status, 4, 0) < 0) {
-            close(sock_fd); sock_fd = -1; continue;
+            close(sock_fd); sock_fd = -1; is_connected = false; continue;
         }
 
         if (send(sock_fd, sending_buf, IMG_W * IMG_H * 3, 0) < 0) {
-            close(sock_fd); sock_fd = -1; continue;
+            close(sock_fd); sock_fd = -1; is_connected = false; continue;
         }
 
         // 3. Receive PROCESSED Frame from Python (Reuse sending_buf)
@@ -211,7 +213,7 @@ static void *net_thread_entry(void *arg) {
         while (total_read < size) {
             int n = recv(sock_fd, sending_buf + total_read, size - total_read, 0);
             if (n <= 0) {
-                close(sock_fd); sock_fd = -1; total_read = -1; break;
+                close(sock_fd); sock_fd = -1; is_connected = false; total_read = -1; break;
             }
             total_read += n;
         }
@@ -223,17 +225,17 @@ static void *net_thread_entry(void *arg) {
 
         // Recv YOLO (64 bytes)
         if (recv(sock_fd, yolo_res, 64, 0) <= 0) {
-            close(sock_fd); sock_fd = -1; continue;
+            close(sock_fd); sock_fd = -1; is_connected = false; continue;
         }
         // Recv Explain (512 bytes)
         if (recv(sock_fd, explain_res, 512, 0) <= 0) {
-            close(sock_fd); sock_fd = -1; continue;
+            close(sock_fd); sock_fd = -1; is_connected = false; continue;
         }
 
         // 5. Receive Audio Data
         uint32_t audio_size = 0;
         if (recv(sock_fd, &audio_size, sizeof(audio_size), 0) <= 0) {
-            close(sock_fd); sock_fd = -1; continue;
+            close(sock_fd); sock_fd = -1; is_connected = false; continue;
         }
 
         if (audio_size > 0) {
@@ -412,8 +414,19 @@ static void update_timer_cb(lv_timer_t * t) {
     pthread_mutex_lock(&lock);
 
     // Update YOLO Label
-    if (shared_yolo_result[0] != '\0') {
-        lv_label_set_text(label_result, shared_yolo_result);
+    if (!is_connected) {
+        lv_label_set_text(label_result, "Waiting for ML Server...");
+    } else if (btn_states[0]) {
+        if (shared_yolo_result[0] != '\0') {
+            lv_label_set_text(label_result, shared_yolo_result);
+        } else {
+            // If switched to ON but no result yet, show Detecting
+            if (strcmp(lv_label_get_text(label_result), "Real-time Object is OFF") == 0) {
+                lv_label_set_text(label_result, "Detecting...");
+            }
+        }
+    } else {
+        lv_label_set_text(label_result, "Real-time Object is OFF");
     }
 
     // Update Explain Label & Speak
