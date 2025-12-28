@@ -642,7 +642,7 @@ void final_project_init(void) {
 
     // 2. Header Label
     lv_obj_t * header = lv_label_create(scr);
-    lv_label_set_text(header, "Smart Surveillance System");
+    lv_label_set_text(header, "Assistive AI Vision System");
     lv_obj_set_style_text_font(header, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(header, lv_color_hex(0xFFFFFF), 0);
     lv_obj_align(header, LV_ALIGN_TOP_MID, 0, 10);
