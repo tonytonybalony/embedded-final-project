@@ -53,6 +53,7 @@ static struct buffer *buffers;
 static unsigned int n_buffers;
 static int fd_cam = -1;
 
+
 // --- HELPERS ---
 static void yuyv_to_rgb(const uint8_t *src, uint8_t *dst, int width, int height) {
     int i, j;
@@ -249,6 +250,29 @@ static void update_timer_cb(lv_timer_t * t) {
     if (do_invalidate) lv_obj_invalidate(img_display);
 }
 
+#define ALARM_FILE "/home/tonytony/lv_port_pc_vscode/src/assets/audio/alarm.wav"
+
+static void start_alarm(void) {
+    char cmd[512];
+    // Run a loop in background, save PID to a file
+    snprintf(cmd, sizeof(cmd),
+        "sh -c 'while true; do aplay -q %s; sleep 0.1; done' > /dev/null 2>&1 & echo $! > /tmp/lvgl_alarm.pid",
+        ALARM_FILE);
+    system(cmd);
+}
+
+static void stop_alarm(void) {
+    // Kill the shell script (parent) and aplay (child)
+    system("if [ -f /tmp/lvgl_alarm.pid ]; then "
+           "PID=$(cat /tmp/lvgl_alarm.pid); "
+           "pkill -P $PID; " // Kill children of the shell loop
+           "kill $PID; "     // Kill the shell loop itself
+           "rm /tmp/lvgl_alarm.pid; "
+           "fi");
+    // Ensure silence
+    system("pkill -f 'aplay -q " ALARM_FILE "'");
+}
+
 static void emergency_timer_cb(lv_timer_t * t) {
     (void)t;
     emergency_flash_state = !emergency_flash_state;
@@ -308,11 +332,13 @@ static void btn_event_cb(lv_event_t * e) {
                 emergency_timer = lv_timer_create(emergency_timer_cb, 200, NULL);
             }
             lv_timer_resume(emergency_timer);
+            start_alarm();
         } else {
             // Stop Flashing
             if(emergency_timer) {
                 lv_timer_pause(emergency_timer);
             }
+            stop_alarm();
             // Reset to Dark
             lv_obj_set_style_bg_color(ui_btns[3], lv_color_hex(0x1A1A1A), 0);
             lv_obj_set_style_bg_grad_color(ui_btns[3], lv_color_hex(0x000000), 0);
