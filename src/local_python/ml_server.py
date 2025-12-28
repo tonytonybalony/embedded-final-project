@@ -149,6 +149,7 @@ def start_server():
             annotated_frame = frame_np
             yolo_str = ""
             explain_str = ""
+            audio_bytes = b""
 
             # AI Explain Logic (Button 2)
             if is_explain == 1:
@@ -184,9 +185,12 @@ def start_server():
                                 try:
                                     print("Generating audio...")
                                     tts = gTTS(cached_explanation, lang='en')
-                                    audio_path = "/home/tonytony/lv_port_pc_vscode/src/assets/audio/ai_response.mp3"
-                                    tts.save(audio_path)
-                                    print("Audio saved.")
+                                    # Write to memory buffer
+                                    fp = io.BytesIO()
+                                    tts.write_to_fp(fp)
+                                    fp.seek(0)
+                                    audio_bytes = fp.read()
+                                    print(f"Audio generated: {len(audio_bytes)} bytes")
                                 except Exception as e:
                                     print(f"TTS Error: {e}")
                         except Exception as e:
@@ -227,6 +231,13 @@ def start_server():
             conn.sendall(yolo_str[:64].ljust(64, '\0').encode('utf-8'))
             # Send Explain (512 bytes)
             conn.sendall(explain_str[:512].ljust(512, '\0').encode('utf-8'))
+
+            # 8. Send Audio Data
+            # Send size (4 bytes)
+            conn.sendall(struct.pack('I', len(audio_bytes)))
+            # Send data
+            if len(audio_bytes) > 0:
+                conn.sendall(audio_bytes)
 
     except KeyboardInterrupt:
         print("Shutting down (Ctrl+C).")

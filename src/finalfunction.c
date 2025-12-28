@@ -21,6 +21,8 @@
 // loaded video size
 #define IMG_W       852
 #define IMG_H       480
+#define ALARM_FILE "/home/tonytony/lv_port_pc_vscode/src/assets/audio/alarm.wav"
+#define AI_VOICE_FILE "/home/tonytony/lv_port_pc_vscode/src/assets/audio/ai_response.mp3"
 
 // --- GLOBALS ---
 static lv_obj_t * img_display;
@@ -228,7 +230,46 @@ static void *net_thread_entry(void *arg) {
             close(sock_fd); sock_fd = -1; continue;
         }
 
-        // 5. Update UI Buffers
+        // 5. Receive Audio Data
+        uint32_t audio_size = 0;
+        if (recv(sock_fd, &audio_size, sizeof(audio_size), 0) <= 0) {
+            close(sock_fd); sock_fd = -1; continue;
+        }
+
+        if (audio_size > 0) {
+            // Limit max size to avoid overflow (e.g., 2MB)
+            if (audio_size > 2 * 1024 * 1024) audio_size = 2 * 1024 * 1024;
+
+            uint8_t *audio_buf = malloc(audio_size);
+            if (audio_buf) {
+                int received = 0;
+                while (received < audio_size) {
+                    int r = recv(sock_fd, audio_buf + received, audio_size - received, 0);
+                    if (r <= 0) break;
+                    received += r;
+                }
+
+                // Save to file
+                FILE *fp = fopen(AI_VOICE_FILE, "wb");
+                if (fp) {
+                    fwrite(audio_buf, 1, audio_size, fp);
+                    fclose(fp);
+                }
+                free(audio_buf);
+            } else {
+                // If malloc fails, consume the data to keep sync
+                uint8_t temp[1024];
+                int received = 0;
+                while (received < audio_size) {
+                    int chunk = (audio_size - received > 1024) ? 1024 : (audio_size - received);
+                    int r = recv(sock_fd, temp, chunk, 0);
+                    if (r <= 0) break;
+                    received += r;
+                }
+            }
+        }
+
+        // 6. Update UI Buffers
         pthread_mutex_lock(&lock);
 
         // Always update text buffers
@@ -318,8 +359,6 @@ static void *cam_thread_entry(void *arg) {
 }
 
 // --- AUDIO HELPERS ---
-#define ALARM_FILE "/home/tonytony/lv_port_pc_vscode/src/assets/audio/alarm.wav"
-#define AI_VOICE_FILE "/home/tonytony/lv_port_pc_vscode/src/assets/audio/ai_response.mp3"
 
 // UPDATED: Function to play the pre-generated MP3
 static void speak_text(const char *text) {
