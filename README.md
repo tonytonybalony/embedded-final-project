@@ -1,3 +1,6 @@
+[Youtube Link](https://youtu.be/08xs3S92wzY)
+
+
 # Embedded Final Project (LVGL + YOLO + Gemini + Voice)
 
 This project is a **Linux desktop simulator** built with **LVGL + SDL2** that reads frames from a **virtual webcam** (`/dev/video0`), streams them to a **Python ML server**, and displays:
