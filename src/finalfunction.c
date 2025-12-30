@@ -19,7 +19,7 @@
 #define SERVER_IP   "192.168.175.1"
 #define SERVER_PORT 9999
 #define VIDEO_DEV   "/dev/video0"  // Virtual webcam (v4l2loopback)
-#define IMG_W       852
+#define IMG_W       854
 #define IMG_H       480
 #define ALARM_FILE "/home/tonytony/lv_port_pc_vscode/src/assets/audio/alarm.wav"
 #define AI_VOICE_FILE "/home/tonytony/lv_port_pc_vscode/src/assets/audio/ai_response.mp3"
@@ -138,9 +138,14 @@ static void save_snapshot_bmp(const uint8_t *buffer, int width, int height) {
         return;
     }
 
+    // Calculate padding for BMP (rows must be multiple of 4 bytes)
+    int row_size = width * 3;
+    int padding = (4 - (row_size % 4)) % 4;
+    int stride = row_size + padding;
+
     // BMP Header
     uint32_t headers_size = 14 + 40;
-    uint32_t pixel_data_size = width * height * 3;
+    uint32_t pixel_data_size = stride * height; // Updated to include padding
     uint32_t filesize = headers_size + pixel_data_size;
 
     uint8_t bmpfileheader[14] = {
@@ -170,10 +175,15 @@ static void save_snapshot_bmp(const uint8_t *buffer, int width, int height) {
     // BMP stores pixels bottom-to-top, so we write rows in reverse order
     // Also, BMP expects BGR. Our buffer is BGR (from Python/OpenCV), so we can write directly.
     // However, we need to flip vertically.
-    uint8_t *row = malloc(width * 3);
+    uint8_t *row = malloc(row_size);
+    uint8_t pad_bytes[3] = {0, 0, 0}; // Max padding is 3 bytes
+
     for (int y = height - 1; y >= 0; y--) {
-        memcpy(row, &buffer[y * width * 3], width * 3);
-        fwrite(row, 1, width * 3, f);
+        memcpy(row, &buffer[y * width * 3], row_size);
+        fwrite(row, 1, row_size, f);
+        if (padding > 0) {
+            fwrite(pad_bytes, 1, padding, f);
+        }
     }
     free(row);
     fclose(f);
